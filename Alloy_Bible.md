@@ -1,6 +1,6 @@
 # The Alloy Bible
 
-*Generated from the `law` block in `alloy.html`. Edit the block, not this file; the manager's checker refuses a file that drifts from its source.*
+*Generated from the `law` block in `alloy/alloy.html`. Edit the block, not this file; the manager's checker refuses a file that drifts from its source.*
 
 The law of Alloy: what it is for, what its conventions mean, and which of them may never quietly
 change. Read this before changing anything in `alloy.html`.

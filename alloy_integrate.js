@@ -6,12 +6,12 @@
 //   3. install the engine into that file through OFCU Manager, the real lifecycle call
 //   4. validate the result
 //
-// Run: node alloy_integrate.js
+// Run from anywhere: node alloy/alloy_integrate.js
 'use strict';
 const fs = require('fs');
 const path = require('path');
 
-const DIR = __dirname;
+const DIR = path.join(__dirname, '..');   // the universe: alloy/ and ofcu-manager/ are folders in it
 const TARGET = 'workspace/integration-target.html';
 
 let failures = 0;
@@ -32,10 +32,10 @@ function blockBody(html, attrMatch) {
   throw new Error('block not found: ' + attrMatch);
 }
 
-const alloyHtml = fs.readFileSync(path.join(DIR, 'alloy.html'), 'utf8');
+const alloyHtml = fs.readFileSync(path.join(DIR, 'alloy/alloy.html'), 'utf8');
 const Alloy = new Function(blockBody(alloyHtml, /data-ofcu-type="exportable"/) + '\n;return Alloy;')();
 
-const mgrHtml = fs.readFileSync(path.join(DIR, 'ofcu-manager.html'), 'utf8');
+const mgrHtml = fs.readFileSync(path.join(DIR, 'ofcu-manager/ofcu-manager.html'), 'utf8');
 const { OFCU, OFCUManager } = new Function('require',
   // By the package on the tag: the manager's law block quotes example exportable tags.
   blockBody(mgrHtml, /data-ofcu-type="exportable"[^>]*data-ofcu-package="ofcu-manager"/) + '\n' +
@@ -243,7 +243,8 @@ ok('wrote ' + TARGET + ' with no engine in it');
   const after = fs.readFileSync(path.join(DIR, TARGET), 'utf8');
   check('the engine landed as a managed package',
     /data-ofcu-type="managed-package"[\s\S]{0,300}data-ofcu-package="alloy"/.test(after));
-  check('it records where it came from', /data-ofcu-source="alloy\.html"/.test(after));
+  // By path from the top of the universe, since the manager scans subfolders (rule folder-tree).
+  check('it records where it came from', /data-ofcu-source="alloy\/alloy\.html"/.test(after));
   check('it carries the source hash',
     after.indexOf(/data-ofcu-hash="([^"]+)"/.exec(alloyHtml)[1]) > 0);
 

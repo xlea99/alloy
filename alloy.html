@@ -14705,14 +14705,14 @@ void main() {
 
 <script data-ofcu-type="managed-package"
         data-ofcu-package="ofcu-manager"
-        data-ofcu-version="0.4.0"
-        data-ofcu-built="2026-09-23T12:00:00"
-        data-ofcu-hash="sha256:0a4baa39166ec0e4a962cd2253585c3fcca5b11a80e843334a4e18428e2d8331"
-        data-ofcu-source="ofcu-manager.html">
+        data-ofcu-version="0.5.0"
+        data-ofcu-built="2026-09-26T12:00:00"
+        data-ofcu-hash="sha256:8473b93f2790a2cc607338edf6d45fcbb9a820fda653ae40ed3fb057a0f0563f"
+        data-ofcu-source="ofcu-manager/ofcu-manager.html">
 "use strict";
 
 // ╔══════════════════════════════════════════════════════════════════════════════════════════╗
-// ║  OFCU MANAGER — file machinery v0.4.0                                                    ║
+// ║  OFCU MANAGER — file machinery v0.5.0                                                    ║
 // ║  Scan, query, splice and validate blocks inside other OFCU files.                        ║
 // ║                                                                                          ║
 // ║  OFCU MANAGED PACKAGE — do not hand-edit this block where it is installed.               ║
@@ -15332,11 +15332,106 @@ const OFCUManager = (function () {
   // =====================================================================
   //#region === File Adapters ===
 
+  // *********************************************************************
+  // MENTAL MODEL: the registry is a FOLDER TREE, not a folder. The folder the manager is
+  // pointed at is the universe, and every .html file in it or in its subfolders is an OFCU
+  // file the manager can see, named by its path from that folder with forward slashes:
+  // "webposium/webposium.html". That is what lets each project live in a folder of its own,
+  // with a git repository of its own, while installs and updates still reach across them.
+  //
+  // A person still types "webposium.html". resolve() turns a bare name into the one path that
+  // ends in it, and refuses when two do, because guessing between two files of the same name
+  // is how an update lands in the wrong project.
+  //
+  // Some folders are not part of the universe: any folder whose name starts with a dot (.git,
+  // .idea), node_modules, and whatever `.ofcuignore` at the top lists, one folder or file per
+  // line. An archive of old copies belongs in that list, or its stale providers block every
+  // install of the package they claim (old/webposium_backup.html did exactly that).
+  // *********************************************************************
+
+  // Deep enough for any real layout, shallow enough that a pathological tree still ends.
+  const WALK_DEPTH = 6;
+  // Never part of the universe, whatever .ofcuignore says: dot-folders are tools' own state.
+  const SKIP_DIRS = new Set(['node_modules']);
+
+  /**
+   * Normalises a path someone typed: forward slashes, no leading "./" or "/".
+   * @param {string} path - a path, possibly with backslashes
+   * @returns {string} - the same path, as the registry spells it
+   */
+  function cleanPath(path) {
+    return String(path).replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
+  }
+
+  /**
+   * Parses `.ofcuignore`: one folder or file per line, relative to the top folder. Blank
+   * lines and lines starting with # are skipped; a trailing slash is optional.
+   * @param {string|null} text - the file's contents, or null when there is none
+   * @returns {string[]} - clean paths, without trailing slashes
+   */
+  function parseIgnore(text) {
+    return String(text || '').split(/\r?\n/).map((l) => l.trim())
+      .filter((l) => l && l[0] !== '#')
+      .map((l) => cleanPath(l).replace(/\/+$/, ''));
+  }
+
+  /**
+   * Whether a path is something the ignore list names, or sits inside one.
+   * @param {string} path - a clean path from the top folder
+   * @param {string[]} ignore - from parseIgnore()
+   * @returns {boolean}
+   */
+  function isIgnored(path, ignore) {
+    return ignore.some((ig) => path === ig || path.startsWith(ig + '/'));
+  }
+
+  /**
+   * Whether a folder is never walked, whatever the ignore list says.
+   * @param {string} name - the folder's own name
+   * @returns {boolean}
+   */
+  function isSkippedDir(name) {
+    return name[0] === '.' || SKIP_DIRS.has(name);
+  }
+
+  /**
+   * The one path a name means.
+   *
+   * An exact path wins. A bare name ("webposium.html") means the one file in the tree with
+   * that name, and two such files are a refusal naming both, never a guess. A name with no
+   * match is returned as given, so a file that does not exist yet (a backup, a new game)
+   * lands where it was asked to. A backup follows its file: "webposium.html.bak" means the
+   * .bak beside whichever webposium.html the tree holds.
+   *
+   * @param {FileAdapter} adapter - the adapter whose tree to search
+   * @param {string} name - a path or a bare filename
+   * @returns {Promise<string>} - the path from the top folder
+   * @throws if a bare name matches more than one file
+   */
+  async function resolveName(adapter, name) {
+    const path = cleanPath(name);
+    if (/\.bak$/i.test(path)) return (await resolveName(adapter, path.slice(0, -4))) + '.bak';
+    const all = await adapter.list();
+    if (all.includes(path) || path.includes('/')) return path;
+    const hits = all.filter((f) => f.slice(f.lastIndexOf('/') + 1) === path);
+    if (hits.length === 1) return hits[0];
+    if (hits.length > 1) {
+      throw new Error('OFCU: "' + path + '" names ' + hits.length + ' files (' + hits.join(', ') +
+                      '). Name one by its path from the top folder.');
+    }
+    return path;
+  }
+
   /**
    * Builds the right file adapter for whatever `dir` is: a FileSystemDirectoryHandle
    * from the browser, or a path string from Node. Everything above this line is
    * environment-agnostic and does pure string work, which is the whole reason the
    * split exists.
+   *
+   * Both adapters walk the tree once and remember it for their lifetime. An adapter lives
+   * for one call (every OFCU function makes its own), and resolve() consults the listing on
+   * every read, so walking the tree again per read would turn one install into dozens of
+   * directory walks.
    *
    * @param {FileSystemDirectoryHandle|string} dir - directory handle or path
    * @returns {FileAdapter} - the adapter
@@ -15344,50 +15439,107 @@ const OFCUManager = (function () {
    */
   function makeAdapter(dir) {
     if (dir && typeof dir === 'object' && typeof dir.getFileHandle === 'function') {
-      return {
+      let listing = null;
+      const leaf = (path) => path.slice(path.lastIndexOf('/') + 1);
+      // The folder handle holding a path. Folders are never created: a write to a folder
+      // that does not exist is a mistake to report, not a structure to invent.
+      const folderOf = async (path) => {
+        const parts = path.split('/');
+        parts.pop();
+        let d = dir;
+        for (const part of parts) d = await d.getDirectoryHandle(part);
+        return d;
+      };
+      const adapter = {
         label: dir.name,
         async list() {
+          if (listing) return listing;
+          let ignore = [];
+          try {
+            ignore = parseIgnore(await (await (await dir.getFileHandle('.ofcuignore')).getFile()).text());
+          } catch (e) { /* no .ofcuignore: nothing extra is ignored */ }
           const names = [];
-          for await (const entry of dir.values()) {
-            if (entry.kind === 'file' && isHtmlName(entry.name)) names.push(entry.name);
-          }
-          return names.sort();
+          const walk = async (d, prefix, depth) => {
+            for await (const entry of d.values()) {
+              const path = prefix + entry.name;
+              if (entry.kind === 'directory') {
+                if (depth < WALK_DEPTH && !isSkippedDir(entry.name) && !isIgnored(path, ignore)) {
+                  await walk(entry, path + '/', depth + 1);
+                }
+              } else if (isHtmlName(entry.name) && !isIgnored(path, ignore)) {
+                names.push(path);
+              }
+            }
+          };
+          await walk(dir, '', 0);
+          return (listing = names.sort());
         },
         async read(name) {
-          const handle = await dir.getFileHandle(name);
+          const path = await resolveName(adapter, name);
+          const handle = await (await folderOf(path)).getFileHandle(leaf(path));
           return (await handle.getFile()).text();
         },
         async write(name, text) {
-          const handle = await dir.getFileHandle(name, { create: true });
+          const path = await resolveName(adapter, name);
+          const handle = await (await folderOf(path)).getFileHandle(leaf(path), { create: true });
           const stream = await handle.createWritable();
           await stream.write(text);
           await stream.close();
         },
         async exists(name) {
-          try { await dir.getFileHandle(name); return true; } catch (e) { return false; }
+          try {
+            const path = await resolveName(adapter, name);
+            await (await folderOf(path)).getFileHandle(leaf(path));
+            return true;
+          } catch (e) { return false; }
         },
+        async resolve(name) { return resolveName(adapter, name); },
       };
+      return adapter;
     }
 
     if (typeof dir === 'string') {
       const fs = require('fs/promises');
       const nodePath = require('path');
-      return {
+      let listing = null;
+      const full = (path) => nodePath.join(dir, ...path.split('/'));
+      const adapter = {
         label: dir,
         async list() {
-          const names = await fs.readdir(dir);
-          return names.filter(isHtmlName).sort();
+          if (listing) return listing;
+          let ignore = [];
+          try { ignore = parseIgnore(await fs.readFile(nodePath.join(dir, '.ofcuignore'), 'utf8')); }
+          catch (e) { /* no .ofcuignore: nothing extra is ignored */ }
+          const names = [];
+          // Symlinks are neither files nor folders to withFileTypes, so they are never
+          // followed: a link back up the tree cannot make this walk forever.
+          const walk = async (abs, prefix, depth) => {
+            for (const entry of await fs.readdir(abs, { withFileTypes: true })) {
+              const path = prefix + entry.name;
+              if (entry.isDirectory()) {
+                if (depth < WALK_DEPTH && !isSkippedDir(entry.name) && !isIgnored(path, ignore)) {
+                  await walk(nodePath.join(abs, entry.name), path + '/', depth + 1);
+                }
+              } else if (entry.isFile() && isHtmlName(entry.name) && !isIgnored(path, ignore)) {
+                names.push(path);
+              }
+            }
+          };
+          await walk(dir, '', 0);
+          return (listing = names.sort());
         },
         async read(name) {
-          return fs.readFile(nodePath.join(dir, name), 'utf8');
+          return fs.readFile(full(await resolveName(adapter, name)), 'utf8');
         },
         async write(name, text) {
-          await fs.writeFile(nodePath.join(dir, name), text, 'utf8');
+          await fs.writeFile(full(await resolveName(adapter, name)), text, 'utf8');
         },
         async exists(name) {
-          try { await fs.access(nodePath.join(dir, name)); return true; } catch (e) { return false; }
+          try { await fs.access(full(await resolveName(adapter, name))); return true; } catch (e) { return false; }
         },
+        async resolve(name) { return resolveName(adapter, name); },
       };
+      return adapter;
     }
 
     throw new Error('OFCU: `dir` must be a FileSystemDirectoryHandle (browser) or a path ' +
@@ -16688,7 +16840,7 @@ const OFCUManager = (function () {
     //     the same escaping and the same failure voice ---
     fail, decodeEntities, escapeAttr, parseVersion,
 
-    version: '0.4.0',
+    version: '0.5.0',
   };
 })();
 

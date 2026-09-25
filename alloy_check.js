@@ -810,7 +810,7 @@ if (Alloy) {
     // Real PNGs from the workspace, if any are there.
     {
       const fsx = require('fs'), pathx = require('path');
-      const dir = pathx.join(DIR, 'workspace');
+      const dir = pathx.join(DIR, '..', 'workspace');   // the universe's workspace, beside alloy/
       let tried = 0, okCount = 0;
       if (fsx.existsSync(dir)) {
         for (const f of fsx.readdirSync(dir).filter((n) => n.toLowerCase().endsWith('.png'))) {
